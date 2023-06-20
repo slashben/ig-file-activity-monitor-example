@@ -21,10 +21,20 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// Global constants
 const execTraceName = "trace_exec"
 const openTraceName = "trace_open"
 
+// Global variables
 var NodeName string
+var containerMap = make(map[ContainerKey]*os.File)
+
+// Global types
+type ContainerKey struct {
+	Namespace     string
+	Podname       string
+	ContainerName string
+}
 
 func checkKubernetesConnection() error {
 	// Check if the Kubernetes cluster is reachable
@@ -201,14 +211,6 @@ func main() {
 	os.Exit(0)
 }
 
-type ContainerKey struct {
-	Namespace     string
-	Podname       string
-	ContainerName string
-}
-
-var containerMap = make(map[ContainerKey]*os.File)
-
 func callback(notif containercollection.PubSubEvent) {
 	if notif.Type == containercollection.EventTypeAddContainer {
 		log.Printf("Container in Pod %s added: %v pid %d\n", notif.Container.Podname, notif.Container.ID, notif.Container.Pid)
@@ -232,7 +234,9 @@ func callback(notif containercollection.PubSubEvent) {
 }
 
 func reportFileAccessInPod(namespaceName string, podName string, containerName string, file string) {
+	// Not printing so we don't flood the logs and CPU
 	//log.Printf("File %s was accessed in Pod %s/%s container %s\n", file, namespaceName, podName, containerName)
+
 	// Write the event to the file
 	f, ok := containerMap[ContainerKey{namespaceName, podName, containerName}]
 	if !ok {

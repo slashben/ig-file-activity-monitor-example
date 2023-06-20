@@ -5,6 +5,9 @@ wlftracer: wl-file-activity-tracer.go
 install: wlftracer
 	./scripts/install-in-pod.sh wlftracer
 
+open-shell:
+	./scripts/open-shell-in-pod.sh
+
 deploy-dev-pod:
 	kubectl apply -f dev/devpod.yaml
 
