@@ -131,14 +131,14 @@ func main() {
 			if len(event.Args) > 0 {
 				procImageName = event.Args[0]
 			}
-			fmt.Printf("A new %q process with pid %d was executed in Pod %s/%s\n", procImageName, event.Pid, event.Namespace, event.Pod)
+			reportFileAccessInPod(event.Namespace, event.Pod, event.Container, procImageName)
 		}
 	}
 
 	// Define a callback to handle open events
 	openEventCallback := func(event *traceropentype.Event) {
 		if event.Ret > -1 {
-			fmt.Printf("File %s was opened by process with pid %d in Pod %s/%s\n", event.Path, event.Pid, event.Namespace, event.Pod)
+			reportFileAccessInPod(event.Namespace, event.Pod, event.Container, event.Path)
 		}
 	}
 
@@ -201,13 +201,43 @@ func main() {
 	os.Exit(0)
 }
 
+type ContainerKey struct {
+	Namespace     string
+	Podname       string
+	ContainerName string
+}
+
+var containerMap = make(map[ContainerKey]*os.File)
+
 func callback(notif containercollection.PubSubEvent) {
-	switch notif.Type {
-	case containercollection.EventTypeAddContainer:
+	if notif.Type == containercollection.EventTypeAddContainer {
 		log.Printf("Container in Pod %s added: %v pid %d\n", notif.Container.Podname, notif.Container.ID, notif.Container.Pid)
-	case containercollection.EventTypeRemoveContainer:
+		// Create a file to store events for the container
+		f, err := os.Create(fmt.Sprintf("/tmp/%s-%s-%s.log", notif.Container.Namespace, notif.Container.Podname, notif.Container.Name))
+		if err != nil {
+			log.Printf("Error creating file: %v\n", err)
+			return
+		}
+		containerMap[ContainerKey{notif.Container.Namespace, notif.Container.Podname, notif.Container.Name}] = f
+	} else if notif.Type == containercollection.EventTypeRemoveContainer {
 		log.Printf("Container removed: %v pid %d\n", notif.Container.ID, notif.Container.Pid)
-	default:
+		// Close the file
+		f, ok := containerMap[ContainerKey{notif.Container.Namespace, notif.Container.Podname, notif.Container.Name}]
+		if !ok {
+			log.Printf("Container not found: %v pid %d\n", notif.Container.ID, notif.Container.Pid)
+			return
+		}
+		f.Close()
+	}
+}
+
+func reportFileAccessInPod(namespaceName string, podName string, containerName string, file string) {
+	//log.Printf("File %s was accessed in Pod %s/%s container %s\n", file, namespaceName, podName, containerName)
+	// Write the event to the file
+	f, ok := containerMap[ContainerKey{namespaceName, podName, containerName}]
+	if !ok {
+		log.Printf("Container not found: %s/%s/%s\n", namespaceName, podName, containerName)
 		return
 	}
+	f.WriteString(fmt.Sprintf("%s\n", file))
 }
