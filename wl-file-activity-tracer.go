@@ -10,11 +10,19 @@ import (
 
 	"github.com/cilium/ebpf/rlimit"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
+	tracerexec "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/exec/tracer"
+	tracerexectype "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/exec/types"
+	traceropen "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/open/tracer"
+	traceropentype "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/open/types"
+	tracercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/tracer-collection"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+const execTraceName = "trace_exec"
+const openTraceName = "trace_open"
 
 var NodeName string
 
@@ -77,12 +85,12 @@ func main() {
 	containerCollection := &containercollection.ContainerCollection{}
 
 	// Create a tracer collection instance
-	//tracerCollection, err := tracercollection.NewTracerCollection(containerCollection)
-	//if err != nil {
-	//	log.Printf("failed to create trace-collection: %s\n", err)
-	//	return
-	//}
-	//defer tracerCollection.Close()
+	tracerCollection, err := tracercollection.NewTracerCollection(containerCollection)
+	if err != nil {
+		log.Printf("failed to create trace-collection: %s\n", err)
+		return
+	}
+	defer tracerCollection.Close()
 
 	containerEventFuncs := []containercollection.FuncNotify{callback}
 
@@ -91,9 +99,7 @@ func main() {
 
 	// Define the different options for the container collection instance
 	opts := []containercollection.ContainerCollectionOption{
-		// Indicate the callback that will be invoked each time
-		// there is an event
-		// containercollection.WithTracerCollection(tracerCollection),
+		containercollection.WithTracerCollection(tracerCollection),
 
 		// Get containers created with runc
 		containercollection.WithRuncFanotify(),
@@ -117,6 +123,73 @@ func main() {
 		return
 	}
 	defer containerCollection.Close()
+
+	// Define a callback to handle exec events
+	execEventCallback := func(event *tracerexectype.Event) {
+		if event.Retval > -1 {
+			procImageName := event.Comm
+			if len(event.Args) > 0 {
+				procImageName = event.Args[0]
+			}
+			fmt.Printf("A new %q process with pid %d was executed in Pod %s/%s\n", procImageName, event.Pid, event.Namespace, event.Pod)
+		}
+	}
+
+	// Define a callback to handle open events
+	openEventCallback := func(event *traceropentype.Event) {
+		if event.Ret > -1 {
+			fmt.Printf("File %s was opened by process with pid %d in Pod %s/%s\n", event.Path, event.Pid, event.Namespace, event.Pod)
+		}
+	}
+
+	// Selecting the container to trace, we are choosing all Pod containers with the label "ig-trace=file-access"
+	containerSelector := containercollection.ContainerSelector{
+		Labels: map[string]string{
+			"ig-trace": "file-access",
+		},
+	}
+
+	if err := tracerCollection.AddTracer(execTraceName, containerSelector); err != nil {
+		log.Printf("error adding tracer: %s\n", err)
+		return
+	}
+	defer tracerCollection.RemoveTracer(execTraceName)
+
+	if err := tracerCollection.AddTracer(openTraceName, containerSelector); err != nil {
+		log.Printf("error adding tracer: %s\n", err)
+		return
+	}
+	defer tracerCollection.RemoveTracer(openTraceName)
+
+	// Get mount namespace map to filter by containers
+	execMountnsmap, err := tracerCollection.TracerMountNsMap(execTraceName)
+	if err != nil {
+		fmt.Printf("failed to get execMountnsmap: %s\n", err)
+		return
+	}
+
+	// Get mount namespace map to filter by containers
+	openMountnsmap, err := tracerCollection.TracerMountNsMap(openTraceName)
+	if err != nil {
+		fmt.Printf("failed to get execMountnsmap: %s\n", err)
+		return
+	}
+
+	// Create the exec tracer
+	tracerExec, err := tracerexec.NewTracer(&tracerexec.Config{MountnsMap: execMountnsmap}, containerCollection, execEventCallback)
+	if err != nil {
+		fmt.Printf("error creating tracer: %s\n", err)
+		return
+	}
+	defer tracerExec.Stop()
+
+	// Create the exec tracer
+	tracerOpen, err := traceropen.NewTracer(&traceropen.Config{MountnsMap: openMountnsmap}, containerCollection, openEventCallback)
+	if err != nil {
+		fmt.Printf("error creating tracer: %s\n", err)
+		return
+	}
+	defer tracerOpen.Stop()
 
 	// Wait for shutdown signal
 	shutdown := make(chan os.Signal, 1)

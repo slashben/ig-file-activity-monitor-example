@@ -5,9 +5,12 @@ wlftracer: wl-file-activity-tracer.go
 install: wlftracer
 	./scripts/install-in-pod.sh wlftracer
 
+deploy-dev-pod:
+	kubectl apply -f dev/devpod.yaml
+
 clean:
 	rm -f wlftracer
 
 all: wlftracer
 
-.PHONY: clean all install
+.PHONY: clean all install deploy-dev-pod
