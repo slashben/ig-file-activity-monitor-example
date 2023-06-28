@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -98,6 +99,11 @@ func serviceInitNChecks() error {
 }
 
 func main() {
+	// Define --all flag
+	allPtr := flag.Bool("all", false, "Trace all containers")
+	// Use flags package to parse command line arguments
+	flag.Parse()
+
 	// Initialize the service
 	if err := serviceInitNChecks(); err != nil {
 		log.Fatalf("Failed to initialize service: %v\n", err)
@@ -170,11 +176,17 @@ func main() {
 		reportTCPActivityInPod(event.Namespace, event.Pod, event.Container, event.Operation, event.Saddr, event.Daddr)
 	}
 
-	// Selecting the container to trace, we are choosing all Pod containers with the label "ig-trace=file-access"
-	containerSelector := containercollection.ContainerSelector{
-		Labels: map[string]string{
-			"ig-trace": "file-access",
-		},
+	var containerSelector containercollection.ContainerSelector
+	if !*allPtr {
+		// Selecting the container to trace, we are choosing all Pod containers with the label "ig-trace=file-access"
+		containerSelector = containercollection.ContainerSelector{
+			Labels: map[string]string{
+				"ig-trace": "file-access",
+			},
+		}
+	} else {
+		// Selecting all containers
+		containerSelector = containercollection.ContainerSelector{}
 	}
 
 	// Setting up all the tracers
