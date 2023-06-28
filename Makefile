@@ -1,5 +1,5 @@
 
-wlftracer: wl-file-activity-tracer.go
+wlftracer: wl-file-activity-tracer.go go.mod
 	CGO_ENABLED=0 go build -tags osusergo,netgo -ldflags="-extldflags=-static" -o wlftracer wl-file-activity-tracer.go
 
 install: wlftracer
