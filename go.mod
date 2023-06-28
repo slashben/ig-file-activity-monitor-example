@@ -4,7 +4,7 @@ go 1.19
 
 require (
 	github.com/cilium/ebpf v0.10.0
-	github.com/inspektor-gadget/inspektor-gadget v0.17.1-0.20230627150417-9dd5d92ce443
+	github.com/inspektor-gadget/inspektor-gadget v0.17.0
 	k8s.io/apimachinery v0.27.3
 	k8s.io/client-go v0.27.3
 )
@@ -40,6 +40,7 @@ require (
 	github.com/opencontainers/runtime-spec v1.1.0-rc.3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/s3rj1k/go-fanotify/fanotify v0.0.0-20210917134616-9c00a300bb7a // indirect
+	github.com/seccomp/libseccomp-golang v0.10.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.opentelemetry.io/otel v1.16.0 // indirect

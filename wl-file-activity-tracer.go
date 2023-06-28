@@ -10,10 +10,18 @@ import (
 
 	"github.com/cilium/ebpf/rlimit"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
+
 	tracerexec "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/exec/tracer"
 	tracerexectype "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/exec/types"
+
 	traceropen "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/open/tracer"
 	traceropentype "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/open/types"
+
+	tracertcp "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/tcp/tracer"
+	tracertcptype "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/trace/tcp/types"
+
+	tracersyscall "github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets/advise/seccomp/tracer"
+
 	tracercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/tracer-collection"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -24,6 +32,10 @@ import (
 // Global constants
 const execTraceName = "trace_exec"
 const openTraceName = "trace_open"
+const tcpTraceName = "trace_tcp"
+const syscallTraceName = "trace_syscall"
+
+var traceSystemCall *tracersyscall.Tracer
 
 // Global variables
 var NodeName string
@@ -141,15 +153,21 @@ func main() {
 			if len(event.Args) > 0 {
 				procImageName = event.Args[0]
 			}
-			reportFileAccessInPod(event.Namespace, event.Pod, event.Container, procImageName)
+			reportFileAccessInPod(event.Namespace, event.Pod, event.Container, procImageName, "exec")
 		}
 	}
 
 	// Define a callback to handle open events
 	openEventCallback := func(event *traceropentype.Event) {
 		if event.Ret > -1 {
-			reportFileAccessInPod(event.Namespace, event.Pod, event.Container, event.Path)
+			reportFileAccessInPod(event.Namespace, event.Pod, event.Container, event.Path, "open")
 		}
+	}
+
+	// Define a callback to handle tcp events
+	tcpEventCallback := func(event *tracertcptype.Event) {
+		log.Printf("TCP event: %v\n", event)
+		reportTCPActivityInPod(event.Namespace, event.Pod, event.Container, event.Operation, event.Saddr, event.Daddr)
 	}
 
 	// Selecting the container to trace, we are choosing all Pod containers with the label "ig-trace=file-access"
@@ -159,17 +177,34 @@ func main() {
 		},
 	}
 
+	// Setting up all the tracers
+
+	// Add exec tracer
 	if err := tracerCollection.AddTracer(execTraceName, containerSelector); err != nil {
 		log.Printf("error adding tracer: %s\n", err)
 		return
 	}
 	defer tracerCollection.RemoveTracer(execTraceName)
 
+	// Add open tracer
 	if err := tracerCollection.AddTracer(openTraceName, containerSelector); err != nil {
 		log.Printf("error adding tracer: %s\n", err)
 		return
 	}
 	defer tracerCollection.RemoveTracer(openTraceName)
+
+	// Add tcp tracer
+	if err := tracerCollection.AddTracer(tcpTraceName, containerSelector); err != nil {
+		log.Printf("error adding tracer: %s\n", err)
+		return
+	}
+	defer tracerCollection.RemoveTracer(tcpTraceName)
+
+	// Add syscall tracer
+	if err := tracerCollection.AddTracer(syscallTraceName, containerSelector); err != nil {
+		log.Printf("error adding tracer: %s\n", err)
+		return
+	}
 
 	// Get mount namespace map to filter by containers
 	execMountnsmap, err := tracerCollection.TracerMountNsMap(execTraceName)
@@ -181,7 +216,14 @@ func main() {
 	// Get mount namespace map to filter by containers
 	openMountnsmap, err := tracerCollection.TracerMountNsMap(openTraceName)
 	if err != nil {
-		fmt.Printf("failed to get execMountnsmap: %s\n", err)
+		fmt.Printf("failed to get openMountnsmap: %s\n", err)
+		return
+	}
+
+	// Get mount namespace map to filter by containers
+	tcpMountnsmap, err := tracerCollection.TracerMountNsMap(tcpTraceName)
+	if err != nil {
+		fmt.Printf("failed to get tcpMountnsmap: %s\n", err)
 		return
 	}
 
@@ -193,13 +235,30 @@ func main() {
 	}
 	defer tracerExec.Stop()
 
-	// Create the exec tracer
+	// Create the open tracer
 	tracerOpen, err := traceropen.NewTracer(&traceropen.Config{MountnsMap: openMountnsmap}, containerCollection, openEventCallback)
 	if err != nil {
 		fmt.Printf("error creating tracer: %s\n", err)
 		return
 	}
 	defer tracerOpen.Stop()
+
+	// Create the tcp tracer
+	tracerTCP, err := tracertcp.NewTracer(&tracertcp.Config{MountnsMap: tcpMountnsmap}, containerCollection, tcpEventCallback)
+	if err != nil {
+		fmt.Printf("error creating tracer: %s\n", err)
+		return
+	}
+	defer tracerTCP.Stop()
+
+	// Create the syscall tracer
+	tracerSyscall, err := tracersyscall.NewTracer()
+	if err != nil {
+		fmt.Printf("error creating tracer: %s\n", err)
+		return
+	}
+	traceSystemCall = tracerSyscall
+	defer tracerSyscall.Close()
 
 	// Wait for shutdown signal
 	shutdown := make(chan os.Signal, 1)
@@ -223,17 +282,28 @@ func callback(notif containercollection.PubSubEvent) {
 		containerMap[ContainerKey{notif.Container.Namespace, notif.Container.Podname, notif.Container.Name}] = f
 	} else if notif.Type == containercollection.EventTypeRemoveContainer {
 		log.Printf("Container removed: %v pid %d\n", notif.Container.ID, notif.Container.Pid)
+
 		// Close the file
 		f, ok := containerMap[ContainerKey{notif.Container.Namespace, notif.Container.Podname, notif.Container.Name}]
 		if !ok {
 			log.Printf("Container not found: %v pid %d\n", notif.Container.ID, notif.Container.Pid)
 			return
 		}
+
+		syscalls, err := traceSystemCall.Peek(notif.Container.Mntns)
+		if err != nil {
+			log.Printf("Error peeking syscalls: %v\n", err)
+		} else {
+			for _, syscall := range syscalls {
+				f.WriteString(fmt.Sprintf("syscall: %s\n", syscall))
+			}
+		}
+
 		f.Close()
 	}
 }
 
-func reportFileAccessInPod(namespaceName string, podName string, containerName string, file string) {
+func reportFileAccessInPod(namespaceName string, podName string, containerName string, file string, action string) {
 	// Not printing so we don't flood the logs and CPU
 	//log.Printf("File %s was accessed in Pod %s/%s container %s\n", file, namespaceName, podName, containerName)
 
@@ -243,5 +313,25 @@ func reportFileAccessInPod(namespaceName string, podName string, containerName s
 		log.Printf("Container not found: %s/%s/%s\n", namespaceName, podName, containerName)
 		return
 	}
-	f.WriteString(fmt.Sprintf("%s\n", file))
+	f.WriteString(fmt.Sprintf("%s: %s\n", action, file))
+}
+
+func reportTCPActivityInPod(namespaceName string, podName string, containerName string, operation string, src string, dst string) {
+	// Write the event to the file
+	f, ok := containerMap[ContainerKey{namespaceName, podName, containerName}]
+	if !ok {
+		log.Printf("Container not found: %s/%s/%s\n", namespaceName, podName, containerName)
+		return
+	}
+	f.WriteString(fmt.Sprintf("%s: %s->%s\n", operation, src, dst))
+}
+
+func reportSyscallInPod(namespaceName string, podName string, containerName string, syscall string) {
+	// Write the event to the file
+	f, ok := containerMap[ContainerKey{namespaceName, podName, containerName}]
+	if !ok {
+		log.Printf("Container not found: %s/%s/%s\n", namespaceName, podName, containerName)
+		return
+	}
+	f.WriteString(fmt.Sprintf("syscall: %s\n", syscall))
 }

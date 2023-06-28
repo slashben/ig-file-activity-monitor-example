@@ -56,7 +56,7 @@ spec:
       containers:
       - name: dev-env
         terminationMessagePolicy: FallbackToLogsOnError
-        image: alpine:latest
+        image: ubuntu:latest
         command: ["/bin/sleep"]
         args: ["infinity"]
         imagePullPolicy: Always
